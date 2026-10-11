@@ -27,6 +27,8 @@ Any agent that supports remote MCP servers over HTTP can connect. It signs in on
 | [OpenAI Codex (CLI and IDE extension)](#openai-codex) | Streamable HTTP | Browser (`codex mcp login`) or access token | Not yet |
 | [Windsurf (Devin Desktop)](#windsurf-devin-desktop) | Streamable HTTP (`serverUrl`) | Browser or access token | Not yet |
 
+An agent that supports [MCP Apps](https://modelcontextprotocol.io/extensions/apps) also shows each page it publishes right under the tool call, with your own access to it; see [Pages in the chat](/docs/publishing#pages-in-the-chat). The others show the link.
+
 **Tested** means someone connected that agent and published a page with it on the date shown. **Not yet** means the setup follows the agent's own documentation as of 2026-09-28, but nobody has published a page with it yet. If a step here is wrong for your version, the agent's own MCP documentation wins.
 
 ## Claude Code

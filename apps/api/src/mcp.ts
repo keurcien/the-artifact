@@ -4,6 +4,7 @@ import {
   isLegacyRequest,
   McpServer,
   readRequestBody,
+  ResourceTemplate,
   WebStandardStreamableHTTPServerTransport,
   type AuthInfo,
 } from '@modelcontextprotocol/server'
@@ -69,6 +70,7 @@ import { db, schema } from './db/index.js'
 import type { Artifact } from './db/schema.js'
 import { describeInspection, type Width } from './inspect.js'
 import { hit, rule, waitText, windowText } from './limits.js'
+import { VIEW_URI_RE, VIEW_URI_TEMPLATE, VIEWER_MIME, VIEWER_TOOL_META, VIEWER_URI, viewData, viewerHtml, viewerResourceMeta } from './mcp-app.js'
 import { canFile, checkFolderName, ensureFolder, fileInto, FolderError, folderNamed, listFolders, MAX_FOLDER_NAME, workspaceOf } from './folders.js'
 import { ALLOWED_EXTENSIONS, checkPath, ENTRY_PATH, isText, MAX_FILE_BYTES, MAX_FILES, MAX_HTML_BYTES, MAX_TOTAL_BYTES } from './files.js'
 import { MAX_PEOPLE_PER_INVITE, parseEmails, sharePeople, SharingError } from './sharing.js'
@@ -224,10 +226,42 @@ function buildServer(auth: McpAuth) {
       return refused ? text(refused, true) : handler(args)
     }
 
+  // Clients with the MCP Apps extension show this under a tool call that published a page (mcp-app.ts)
+  server.registerResource(
+    'viewer',
+    VIEWER_URI,
+    {
+      title: 'Page viewer',
+      description: 'Shows a published page under the tool call that made it, in clients that support MCP Apps.',
+      mimeType: VIEWER_MIME,
+      _meta: viewerResourceMeta(),
+    },
+    // The metadata rides on the read too: hosts fetch the viewer by its URI and may never list it
+    async (uri) => ({ contents: [{ uri: uri.href, mimeType: VIEWER_MIME, text: viewerHtml(), _meta: viewerResourceMeta() }] }),
+  )
+  server.registerResource(
+    'view',
+    new ResourceTemplate(VIEW_URI_TEMPLATE, { list: undefined }),
+    {
+      title: 'Page view link',
+      description: "A page's current version under a link signed for you, which a frame loads without cookies. The link names you and expires.",
+      mimeType: 'application/json',
+    },
+    async (uri) => {
+      const id = uri.href.match(VIEW_URI_RE)?.[1]
+      const view = id ? await viewData(viewer, decodeURIComponent(id)) : null
+      // A page that is gone, or not this person's to open, is an answer the viewer shows, not a
+      // protocol error: hosts turn those into a bare failure ("status 500") in the frame
+      const body = view ?? { error: `No page you can open has the id "${id ?? uri.href}".` }
+      return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body) }] }
+    },
+  )
+
   server.registerTool(
     'publish_artifact',
     {
       title: 'Publish a page',
+      _meta: VIEWER_TOOL_META,
       description:
         'Publish an HTML page and get a shareable link. Either one self-contained document (inline CSS and JS; scripts from public CDNs are fine), ' +
         'or a small site: html is the entry (index.html) and files holds the CSS, JS, images, fonts and data it loads by relative paths. ' +
@@ -265,7 +299,8 @@ function buildServer(auth: McpAuth) {
           visibility,
           folder,
         })
-        return await published(artifact, files?.length ?? 0)
+        const answer = await published(artifact, files?.length ?? 0)
+        return { ...answer, structuredContent: await publishedData(artifact) }
       } catch (err) {
         if (err instanceof PublishError) return text(err.message, true)
         throw err
@@ -277,6 +312,7 @@ function buildServer(auth: McpAuth) {
     'update_files',
     {
       title: 'Update some files of a page',
+      _meta: VIEWER_TOOL_META,
       description:
         'Publish a new version of a page that changes only some of its files and keeps the rest of the current version: ' +
         'add or replace files (index.html replaces the page itself) and remove others. For example, new data for a dashboard: send only data.json. ' +
@@ -306,11 +342,14 @@ function buildServer(auth: McpAuth) {
           remove,
           baseVersion: base_version,
         })
-        return await updated(
-          artifact,
-          (files ?? []).map((f) => f.path),
-          remove ?? [],
-        )
+        return {
+          ...(await updated(
+            artifact,
+            (files ?? []).map((f) => f.path),
+            remove ?? [],
+          )),
+          structuredContent: await publishedData(artifact),
+        }
       } catch (err) {
         if (err instanceof PublishError) return text(err.message, true)
         throw err
@@ -371,6 +410,7 @@ function buildServer(auth: McpAuth) {
       'publish_upload',
       {
         title: 'Publish uploaded files',
+        _meta: VIEWER_TOOL_META,
         description:
           'Second step after prepare_upload: checks that every file arrived with the size and sha256 you listed, then publishes the page and returns its link. ' +
           'Pass artifact_id to publish a new version of an existing page; the link stays the same. ' +
@@ -671,6 +711,7 @@ function buildServer(auth: McpAuth) {
     'duplicate_artifact',
     {
       title: 'Duplicate a page',
+      _meta: VIEWER_TOOL_META,
       description:
         'Make a new page with a copy of the current version of a page you can open, in the connected workspace or another one you can publish to. ' +
         'The copy is yours, has its own link and starts restricted: nobody else is added, and it has no link settings, comments or views. ' +
@@ -692,12 +733,15 @@ function buildServer(auth: McpAuth) {
       }
       try {
         const copy = await duplicatePage(artifact, viewer, to ?? auth.organizationId ?? 'personal', { title: name, clientName: auth.clientName })
-        return text(
-          `Duplicated "${artifact.title}" as "${copy.title}" in ${await workspaceLabel(copy.organizationId)}.\n` +
-            `Link: ${artifactUrl(copy.slug)}\n` +
-            `artifact_id: ${copy.slug}\n` +
-            `Visibility: ${describeVisibility(copy.visibility)}.`,
-        )
+        return {
+          ...text(
+            `Duplicated "${artifact.title}" as "${copy.title}" in ${await workspaceLabel(copy.organizationId)}.\n` +
+              `Link: ${artifactUrl(copy.slug)}\n` +
+              `artifact_id: ${copy.slug}\n` +
+              `Visibility: ${describeVisibility(copy.visibility)}.`,
+          ),
+          structuredContent: await publishedData(copy),
+        }
       } catch (err) {
         return transferFailed(err)
       }
@@ -993,6 +1037,7 @@ function buildServer(auth: McpAuth) {
     'restore_version',
     {
       title: 'Restore an older version',
+      _meta: VIEWER_TOOL_META,
       description:
         'Make an older version of a page current again, like Restore this version in the history. ' +
         'Nothing is overwritten: its HTML and files are published again as a new version, and the link stays the same. For people who can edit the page.',
@@ -1007,7 +1052,10 @@ function buildServer(auth: McpAuth) {
       if (version === artifact.currentVersion) return text('This is already the current version.', true)
       const updated = await restoreVersion(artifact, version, auth.userId)
       if (!updated) return text(`"${artifact.title}" has no version ${version}. Call list_versions to see its versions.`, true)
-      return text(`Restored version ${version} of "${updated.title}" as version ${updated.currentVersion}.\nLink: ${artifactUrl(updated.slug)}`)
+      return {
+        ...text(`Restored version ${version} of "${updated.title}" as version ${updated.currentVersion}.\nLink: ${artifactUrl(updated.slug)}`),
+        structuredContent: await publishedData(updated),
+      }
     }, true),
   )
 

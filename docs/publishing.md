@@ -19,7 +19,7 @@ Tools that take an `artifact_id` act on pages in the agent's own workspace with 
 
 ### publish_artifact
 
-Publishes a page and returns its link.
+Publishes a page and returns its link, as text and as structured content (`{ id, url, title, version, visibility, folder }`, the same as [`publish_upload`](#prepare_upload-and-publish_upload) answers). In an agent that supports MCP Apps, the page itself shows under the call (see [Pages in the chat](#pages-in-the-chat)).
 
 | Argument | Required | Meaning |
 | --- | --- | --- |
@@ -121,7 +121,7 @@ Files a page into a folder, or takes it out of its folder, without publishing a 
 
 ### duplicate_artifact
 
-Makes a new page with a copy of the current version of a page you can open, like **Duplicate** in the app. The copy is yours, with its own link, and starts **Restricted**: nobody else is added, and it has no link settings, comments or views. It counts toward the `publish` [rate limit](/docs/configuration#rate-limits) and the target workspace's [quota](/docs/configuration#workspace-quotas).
+Makes a new page with a copy of the current version of a page you can open, like **Duplicate** in the app. The copy is yours, with its own link, and starts **Restricted**: nobody else is added, and it has no link settings, comments or views. It counts toward the `publish` [rate limit](/docs/configuration#rate-limits) and the target workspace's [quota](/docs/configuration#workspace-quotas). The copy comes back as structured content too, like `publish_artifact`.
 
 | Argument | Required | Meaning |
 | --- | --- | --- |
@@ -238,7 +238,7 @@ How many times each version of a page was opened, and who opened it in the last 
 
 ### restore_version
 
-Makes an older version current again, like **Restore this version** in the history: its HTML and files are published again as a new version, and the link stays the same. Editors only.
+Makes an older version current again, like **Restore this version** in the history: its HTML and files are published again as a new version, and the link stays the same. Editors only. The new version comes back as structured content too, like `publish_artifact`.
 
 | Argument | Required | Meaning |
 | --- | --- | --- |
@@ -513,6 +513,14 @@ To check a token before relying on it, `GET {{APP_URL}}/api/whoami` with it as t
 ```
 
 `workspace.id` is the organization's id, or `null` for a personal workspace, and `client` is the token's name (or the agent's, for an agent's sign-in).
+
+## Pages in the chat
+
+An agent that supports [MCP Apps](https://modelcontextprotocol.io/extensions/apps) (the `io.modelcontextprotocol/ui` extension) shows a page under the tool call that made it, instead of a link: `publish_artifact`, `update_files`, `publish_upload`, `restore_version` and `duplicate_artifact` name the server's viewer (`ui://the-artifact/viewer`) in their `_meta.ui.resourceUri`, and the agent frames it next to the answer. The viewer is a small document of its own, with no scripts from anywhere else, that frames the page's current version and offers **Open in The Artifact**. Agents without the extension see the text and the link as before.
+
+The viewer runs with your own authorization: it asks the server, through the same connection the agent uses, for the resource `artifact://<id>/view`, which answers with the page's current version under a [link signed for you](/docs/security#framing-and-embeds) (or `{ "error": "…" }` for a page that is gone or not yours to open), and frames that. So it shows restricted and organization pages, which [embeds](/docs/sharing#embedding) on other sites can't; someone else who reads the same chat sees the page only if the agent connected as them and they can open it. The link names you and expires after 12 hours; the viewer asks for a fresh one each time the chat shows the call again, and nothing of it is kept in the chat.
+
+The agent's own frame has no origin, so a server that narrows `EMBED_FRAME_ANCESTORS` to a list of sites keeps the viewer out too: leave it unset (the default) on a server whose agents show pages this way.
 
 ## Limits
 
